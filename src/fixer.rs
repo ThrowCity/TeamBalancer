@@ -2,7 +2,7 @@ use rand::Rng;
 use crate::player::{is_valid_team, shuffle, Player};
 
 pub fn fix_invalid_teams(teams: &mut [Vec<Player>], rng: &mut impl Rng, max_passes: usize, use_rng: bool) {
-    log::info!("Fixing stage started");
+    log::debug!("Fixing stage started");
     for pass in 0..max_passes {
         if use_rng { shuffle(teams, rng); }
 
@@ -51,7 +51,7 @@ pub fn fix_invalid_teams(teams: &mut [Vec<Player>], rng: &mut impl Rng, max_pass
         }
     }
 
-    log::info!("Fixing stage complete. Checking final validity...");
+    log::debug!("Fixing stage complete. Checking final validity...");
     let invalid_count = teams.iter().filter(|t| !is_valid_team(t)).count();
     if invalid_count > 0 {
         log::info!("WARNING: {} team(s) remain invalid after {} fixing passes", invalid_count, max_passes);

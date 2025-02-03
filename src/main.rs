@@ -8,13 +8,14 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use clap::{Parser, ArgGroup};
 use log::LevelFilter;
+use rand::Rng;
 use rand::seq::SliceRandom;
 use crate::balancer::rebalance_teams;
 use crate::fixer::fix_invalid_teams;
 use crate::player::{get_range, shuffle, sum_elo, Player};
 use crate::sorter::sort_players_into_teams;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about)]
 #[command(group(
     ArgGroup::new("verbosity")
@@ -42,6 +43,12 @@ pub struct Cli {
 
     #[arg(short = 'o', long = "output-file", value_name = "output")]
     pub output: Option<String>,
+
+    #[arg(short = 't', long = "times", value_name = "times")]
+    pub times: Option<u32>,
+
+    #[arg(short = 'm', long = "max", value_name = "max_score")]
+    pub max_score: Option<u32>,
 }
 
 fn read(file: &str) -> String {
@@ -106,39 +113,7 @@ fn write(file: Option<String>, teams: Vec<Vec<Player>>) {
     });
 }
 
-fn main() {
-    let mut rng = rand::rng();
-    let args = Cli::parse();
-
-    mvlogger::init_unformatted(std::io::stdout(), if args.verbose { LevelFilter::Debug } else { LevelFilter::Info });
-
-    let mut players = Vec::new();
-
-    let data = read(&args.csv_file);
-    let mut lines = data.lines();
-    lines.next();
-    let score_index = if args.use_derivative { 20 } else { 21 };
-    for line in lines {
-        if line.trim().is_empty() {
-            break;
-        }
-        let split_data = line.trim().split(",").collect::<Vec<&str>>();
-        log::debug!("+ Player added: {}, Availability: {}, ELO: {}", split_data[0], split_data[3], split_data[21]);
-        players.push(Player {
-            name: split_data[0].to_string(),
-            elo: split_data[score_index].parse().unwrap(),
-            availability: split_data[3].parse().unwrap(),
-        });
-    }
-
-    if args.randomness {
-        players.shuffle(&mut rng);
-    }
-
-    let mut teams = sort_players_into_teams(players.clone());
-
-    fix_invalid_teams(&mut teams, &mut rng, args.max_fixing_iterations as usize, args.randomness);
-
+fn run(mut teams: Vec<Vec<Player>>, rng: &mut impl Rng, args: Cli) {
     log::debug!("=== Initial Teams ===");
     for (i, team) in teams.iter().enumerate() {
         log::debug!("Team #{} | sum = {}", i + 1, sum_elo(team));
@@ -149,7 +124,7 @@ fn main() {
     let mut range = 0;
     for iteration in 1..=args.max_iterations {
         if args.randomness {
-            shuffle(&mut teams, &mut rng);
+            shuffle(&mut teams, rng);
         }
 
         log::debug!("Balancing iteration: {}", iteration);
@@ -186,4 +161,83 @@ fn main() {
     write(args.output, teams);
 
     log::info!("==> Final balance range: {}", new_range);
+}
+
+fn run_iter(mut teams: Vec<Vec<Player>>, rng: &mut impl Rng, args: Cli, iteration: u32) {
+    shuffle(&mut teams, rng);
+    let mut range = 0;
+    for iteration in 1..=args.max_iterations {
+        shuffle(&mut teams, rng);
+
+        log::debug!("Balancing iteration: {}", iteration);
+        rebalance_teams(&mut teams);
+
+        let new_range = get_range(&teams);
+        log::debug!("==> Iteration {} balance range: {}", iteration, new_range);
+
+        if new_range == range {
+            break;
+        }
+        range = new_range;
+    }
+
+    let new_range = get_range(&teams);
+    let dir = args.output.unwrap_or("teams".to_string());
+
+    log::info!("==> Iteration {} balance range: {}", iteration, new_range);
+
+    let max_score = args.max_score.unwrap_or(u32::MAX);
+    if new_range < max_score {
+        write(Some(format!("{}/{} ({})", dir, new_range, iteration)), teams);
+    }
+}
+
+fn main() {
+    let mut rng = rand::rng();
+    let args = Cli::parse();
+
+    mvlogger::init_unformatted(std::io::stdout(), if args.verbose { LevelFilter::Debug } else { LevelFilter::Info });
+
+    let mut players = Vec::new();
+
+    let data = read(&args.csv_file);
+    let mut lines = data.lines();
+    lines.next();
+    let score_index = if args.use_derivative { 20 } else { 21 };
+    for line in lines {
+        if line.trim().is_empty() {
+            break;
+        }
+        let split_data = line.trim().split(",").collect::<Vec<&str>>();
+        log::debug!("+ Player added: {}, Availability: {}, ELO: {}", split_data[0], split_data[3], split_data[21]);
+        players.push(Player {
+            name: split_data[0].to_string(),
+            elo: split_data[score_index].parse().unwrap(),
+            availability: split_data[3].parse().unwrap(),
+        });
+    }
+
+    if args.randomness {
+        players.shuffle(&mut rng);
+    }
+
+    let mut teams = sort_players_into_teams(players);
+    fix_invalid_teams(&mut teams, &mut rng, args.max_fixing_iterations as usize, args.randomness);
+
+    if let Some(iterations) = args.times {
+        log::debug!("=== Initial Teams ===");
+        for (i, team) in teams.iter().enumerate() {
+            log::debug!("Team #{} | sum = {}", i + 1, sum_elo(team));
+        }
+
+        log::debug!("==> Initial balance range: {}", get_range(&teams));
+
+        std::fs::create_dir_all(args.output.clone().unwrap_or("teams".to_string())).unwrap();
+
+        for i in 0..iterations {
+            run_iter(teams.clone(), &mut rng, args.clone(), i);
+        }
+    } else {
+        run(teams, &mut rng, args);
+    }
 }
